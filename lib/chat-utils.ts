@@ -120,3 +120,10 @@ export function createId(prefix: string): string {
   }
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
+
+/** Turns the first user message into a short sidebar title. */
+export function deriveConversationTitle(firstMessage: string): string {
+  const cleaned = firstMessage.trim().replace(/\s+/g, " ");
+  if (cleaned.length <= 40) return cleaned;
+  return `${cleaned.slice(0, 40).trimEnd()}...`;
+}

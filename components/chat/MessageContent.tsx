@@ -6,8 +6,8 @@ import { parseMessageContent } from "@/lib/chat-utils";
 /**
  * Turns `**bold**`, `*italic*` and `` `code` `` into real elements.
  *
- * This is a deliberately tiny markdown subset — enough for the dummy data,
- * without adding a parsing library in Phase 1.
+ * This is a deliberately tiny markdown subset — enough for what the model
+ * returns, without pulling in a full markdown parser.
  */
 function renderInline(text: string, keyPrefix: string) {
   const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*)/g;

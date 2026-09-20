@@ -29,9 +29,8 @@ export function EmptyState({ onSelectSuggestion }: EmptyStateProps) {
         How can I help today?
       </h2>
       <p className="mt-2 max-w-md text-sm text-balance text-muted-foreground">
-        Promptify is running on local sample data for now, so replies are
-        canned — the chat itself works exactly as it will once a model is
-        connected.
+        Ask anything. Replies come from your local model server, and the whole
+        thread is sent with each message so it remembers the conversation.
       </p>
 
       <div className="mt-8 grid w-full max-w-xl gap-2 sm:grid-cols-2">

@@ -3,16 +3,14 @@
 import { useState } from "react";
 
 import { ChatHeader } from "@/components/chat/ChatHeader";
+import { ErrorNotice } from "@/components/chat/ErrorNotice";
 import { MessageComposer } from "@/components/chat/MessageComposer";
 import { MessageList } from "@/components/chat/MessageList";
 import { Sidebar } from "@/components/chat/Sidebar";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import { createId } from "@/lib/chat-utils";
+import { requestAssistantReply } from "@/lib/chat-api";
+import { createId, deriveConversationTitle } from "@/lib/chat-utils";
 import { createDummyConversations } from "@/lib/dummy-data";
-import {
-  deriveConversationTitle,
-  generateAssistantReply,
-} from "@/lib/dummy-responses";
 import type { Conversation, Message } from "@/lib/types";
 
 const NEW_CHAT_TITLE = "New chat";
@@ -43,15 +41,19 @@ export function ChatLayout() {
   /** The text currently in the composer. */
   const [input, setInput] = useState("");
 
-  /** True while we wait for the (currently fake) assistant reply. */
+  /** True while we wait for the model's reply. */
   const [isLoading, setIsLoading] = useState(false);
+
+  /** Set when a request fails. Cleared on the next attempt. */
+  const [error, setError] = useState<string | null>(null);
 
   /** Mobile only: whether the slide-over sidebar is showing. */
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // Derived from state, so it can never go stale. No extra useState needed.
   const selectedConversation =
-    conversations.find((conversation) => conversation.id === selectedId) ?? null;
+    conversations.find((conversation) => conversation.id === selectedId) ??
+    null;
   const messages = selectedConversation?.messages ?? [];
 
   /** Adds a message to one conversation and bumps its sidebar timestamp. */
@@ -87,12 +89,14 @@ export function ChatLayout() {
     setConversations((previous) => [conversation, ...previous]);
     setSelectedId(conversation.id);
     setInput("");
+    setError(null);
     setIsSidebarOpen(false);
   }
 
   function handleSelectConversation(id: string) {
     setSelectedId(id);
     setInput("");
+    setError(null);
     setIsSidebarOpen(false);
   }
 
@@ -105,14 +109,47 @@ export function ChatLayout() {
   }
 
   /**
-   * The whole send flow lives here, in one readable sequence:
+   * Asks the model for a reply to `history` and appends it.
+   *
+   * `history` is passed in rather than read from state because state updates are
+   * asynchronous: the user's message has only been *queued* at this point, so
+   * reading `messages` here would give us the conversation without it.
+   *
+   * On failure nothing is appended — the user's message stays as the last turn,
+   * which is exactly what Retry needs to send again.
+   */
+  async function sendToModel(conversationId: string, history: Message[]) {
+    setError(null);
+    setIsLoading(true);
+
+    try {
+      const reply = await requestAssistantReply(history);
+
+      appendMessage(conversationId, {
+        id: createId("msg"),
+        role: "assistant",
+        content: reply,
+        createdAt: new Date(),
+      });
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Something went wrong. Please try again.",
+      );
+    } finally {
+      // `finally` guarantees the spinner stops even when the request throws.
+      setIsLoading(false);
+    }
+  }
+
+  /**
+   * The whole send flow, in one readable sequence:
    *
    *   1. show the user's message immediately
    *   2. clear the composer and turn on the loading indicator
-   *   3. await a reply
-   *   4. show the reply and turn the indicator off
-   *
-   * Step 3 is the only line that will change in Phase 2.
+   *   3. await the model's reply
+   *   4. show the reply, or an error, and turn the indicator off
    */
   async function handleSend(text: string) {
     const trimmed = text.trim();
@@ -120,8 +157,11 @@ export function ChatLayout() {
 
     // Sending from the empty state creates the conversation on the fly.
     let conversationId = selectedId;
+    let history: Message[] = messages;
+
     if (!conversationId) {
       conversationId = createId("conv");
+      history = [];
       setConversations((previous) => [
         {
           id: conversationId as string,
@@ -134,31 +174,28 @@ export function ChatLayout() {
       setSelectedId(conversationId);
     }
 
-    appendMessage(conversationId, {
+    const userMessage: Message = {
       id: createId("msg"),
       role: "user",
       content: trimmed,
       createdAt: new Date(),
-    });
+    };
 
+    appendMessage(conversationId, userMessage);
     setInput("");
-    setIsLoading(true);
 
-    try {
-      // PHASE 2: this call becomes a fetch to /api/chat, which talks to Gemini.
-      const reply = await generateAssistantReply(trimmed);
+    // The endpoint is stateless, so the whole thread goes up every time.
+    await sendToModel(conversationId, [...history, userMessage]);
+  }
 
-      appendMessage(conversationId, {
-        id: createId("msg"),
-        role: "assistant",
-        content: reply,
-        createdAt: new Date(),
-      });
-    } finally {
-      // `finally` guarantees the spinner stops even if the reply throws —
-      // which matters much more once a real network call lives here.
-      setIsLoading(false);
-    }
+  /** Re-sends the last user message after a failed request. */
+  function handleRetry() {
+    if (!selectedConversation || isLoading) return;
+
+    const history = selectedConversation.messages;
+    if (history.at(-1)?.role !== "user") return;
+
+    void sendToModel(selectedConversation.id, history);
   }
 
   const sidebar = (
@@ -174,7 +211,9 @@ export function ChatLayout() {
   return (
     <div className="flex h-dvh w-full overflow-hidden">
       {/* Desktop sidebar: always present from the md breakpoint up. */}
-      <aside className="hidden w-72 shrink-0 border-r md:block">{sidebar}</aside>
+      <aside className="hidden w-72 shrink-0 border-r md:block">
+        {sidebar}
+      </aside>
 
       {/* Mobile sidebar: the same component inside a slide-over panel. */}
       <Sheet open={isSidebarOpen} onOpenChange={setIsSidebarOpen}>
@@ -199,12 +238,23 @@ export function ChatLayout() {
           />
         </main>
 
-        <MessageComposer
-          value={input}
-          onChange={setInput}
-          onSend={() => handleSend(input)}
-          isLoading={isLoading}
-        />
+        <div className="border-t bg-background/80 backdrop-blur-sm">
+          {error && (
+            <ErrorNotice
+              message={error}
+              onRetry={
+                messages.at(-1)?.role === "user" ? handleRetry : undefined
+              }
+            />
+          )}
+
+          <MessageComposer
+            value={input}
+            onChange={setInput}
+            onSend={() => handleSend(input)}
+            isLoading={isLoading}
+          />
+        </div>
       </div>
     </div>
   );
